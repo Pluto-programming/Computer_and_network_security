@@ -45,6 +45,10 @@ unsigned configure_context(SSL_CTX* ctx);
 // AES Functions
 int aes_gcm_enc(unsigned char* plaintext, unsigned int p_len, unsigned char* key, unsigned char* iv, unsigned char* dest, int* dest_len, unsigned char* tag);
 
+// Base 64 Wrapper
+void b64_encode(const unsigned char* input,  unsigned char* output, int len);
+void b64_decode(const unsigned char* input,  unsigned char* output, int len);
+
 int main(int argc, char** argv)
 {
     // Socket FD
@@ -175,13 +179,13 @@ exit_ssl:
 void handle_custom_auth(int conn_socket)
 {
     // Variables used for Encryption
-    unsigned char msg_out[MAX_LEN];
-    unsigned char key[AES_256_KEY_SIZE];
-    unsigned char key_c_s[AES_256_KEY_SIZE];
-    unsigned char tag_c[AES_GCM_TAG_SIZE];
+    unsigned char msg_out[MSG_BUFF_MAX] = {0};
+    unsigned char key[AES_256_KEY_SIZE] = {0};
+    unsigned char key_c_s[AES_256_KEY_SIZE] = {0};
+    unsigned char tag_c[AES_GCM_TAG_SIZE + 1] = {0}; // Base 64 Encoded needs 1 byte extra for null termination?
     // unsigned char tag_c_s[AES_GCM_TAG_SIZE];
-    unsigned char iv_c[AES_GCM_IV_SIZE];
-    unsigned char iv_s[AES_GCM_IV_SIZE];
+    unsigned char iv_c[AES_GCM_IV_SIZE + 1] = {0};
+    unsigned char iv_s[AES_GCM_IV_SIZE + 1] = {0};
     int enc_len;
 
     // User Message Parsing
@@ -189,7 +193,7 @@ void handle_custom_auth(int conn_socket)
     unsigned char nonce[NONCE_BYTE];   // User Nonce
 
     // Generic Globals
-    unsigned char msg_buff[MSG_BUFF_MAX] = {0};
+    unsigned char msg_buff[MAX_LEN] = {0};
 
     // Get Time
     time_t currtime = time(NULL);
@@ -220,14 +224,15 @@ void handle_custom_auth(int conn_socket)
     }
 
      // Likely want to do first, if no use found, exit
-     if(!lookup_user_key(key, usrname)) {
-        goto ret_err;
-     }
+    if(!lookup_user_key(key, usrname)) {
+    goto ret_err;
+    }
 
-     // Generate String Encrypted with the User Key
-     sprintf((char*)msg_buff, "%s,%s,%ld,%s", usrname, nonce, currtime, key_c_s); // Need Username, Nonce, Timestamp, Client-Server Key
-     // Encrypt Message (Server)
-     aes_gcm_enc(msg_buff, strlen((char*)msg_buff), key, iv_s, msg_out, &enc_len, tag_c);
+    // Generate String Encrypted with the User Key
+    sprintf((char*)msg_buff, "%s,%s,%ld,%s", usrname, nonce, currtime, key_c_s); // Need Username, Nonce, Timestamp, Client-Server Key
+    
+    // Encrypt Message (Server)
+    aes_gcm_enc(msg_buff, strlen((char*)msg_buff), key, iv_s, msg_out, &enc_len, tag_c);
 
     /**
      * SEND FIRST SET IN MESSAGE
@@ -235,7 +240,13 @@ void handle_custom_auth(int conn_socket)
      * Base 64 encode TAG
      * Format msg_buff as (b_64(msg_out), IV, b_64(tag))
      */
-
+    b64_encode(msg_out, msg_buff, enc_len); // Store msg_out base64 encoded in msg_buff
+    b64_encode(tag_c, tag_c, AES_GCM_TAG_SIZE); // Store tag base64 encoded
+    b64_encode(iv_s, iv_s, AES_GCM_TAG_SIZE); // Store Iv base64 encoded
+    snprintf((char*)msg_out, MSG_BUFF_MAX, "%s,%s,%s", msg_buff, iv_s, tag_c);
+    printf("%s\n", (char*)msg_out);
+    send(conn_socket, msg_out, strlen((char*)msg_out), 0);
+    
 
     // Create Chat Server String for Encryption
     // Load Chat Server Key
@@ -246,7 +257,6 @@ void handle_custom_auth(int conn_socket)
     // Encrypt Message
     aes_gcm_enc(msg_buff, strlen((char*)msg_buff), key, iv_c, msg_out, &enc_len, tag_c);
 
-
     /***
      * 
      * SEND SECOND Message
@@ -254,6 +264,13 @@ void handle_custom_auth(int conn_socket)
      * Base 64 encode TAG
      * Format msg_buff as (b_64(msg_out), IV, TAG, b_64(tag))
      */
+    b64_encode(msg_out, msg_buff, enc_len); // Store msg_out base64 encoded in msg_buff
+    b64_encode(tag_c, tag_c, AES_GCM_TAG_SIZE); // Store tag base64 encoded
+    b64_encode(iv_c, iv_c, AES_GCM_TAG_SIZE); // Store tag base64 encoded
+    snprintf((char*)msg_out, MSG_BUFF_MAX, "%s,%s,%s", msg_buff, iv_c, tag_c);
+
+    send(conn_socket, msg_out, strlen((char*)msg_out), 0);
+    printf("%s\n", (char*)msg_out);
 ret_err:
     return;
 }
@@ -448,4 +465,21 @@ cipher_error:
 
     return 0;
 
+}
+
+void b64_encode(const unsigned char* input,  unsigned char* output, int len)
+{
+    // Base 64 Encode
+    int encode_len = EVP_EncodeBlock(output, input, len);
+    output[encode_len] = '\0'; // Null Terminate
+    return;
+}
+
+
+void b64_decode(const unsigned char* input,  unsigned char* output, int len)
+{
+    // Base 64 Encode
+    int encode_len = EVP_DecodeBlock(output, input, len);
+    output[encode_len] = '\0'; // Null Terminate
+    return;
 }
