@@ -1,4 +1,4 @@
-CC=gcc
+CC=g++
 CFLAGS=-Wall -Werror -g
 
 .PHONY: all clean

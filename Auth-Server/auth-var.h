@@ -21,3 +21,7 @@
 
 // Error Messages
 const char* srv_fault = "Sever Fault, Exception Thrown";
+
+// Control What is compiled
+// Using OpenSSL Versoin 3+
+#define OPNSSL1

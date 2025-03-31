@@ -19,14 +19,18 @@
 // Threading
 #include <pthread.h>
 
+// Custom
+#include "auth-var.h"
+
 // SSL
 #include <openssl/ssl.h> // TLS
 #include <openssl/err.h> // Error 
 #include <openssl/rand.h> // AES Key Generation (SYM)
 #include <openssl/evp.h> // Symmetric Key
+#ifdef OPNSSL3
 #include <openssl/core_names.h> // Defines
-// Custom
-#include "auth-var.h"
+#endif
+
 
 
 // Custom Functions -- Separate into separate file later
@@ -404,6 +408,7 @@ unsigned configure_context(SSL_CTX* ctx)
     return 1;
 }
 
+#ifdef OPNSSL3
 // AES Functions, based on https://github.com/openssl/openssl/blob/master/demos/cipher/aesgcm.c
 
 static OSSL_LIB_CTX *libctx = NULL;
@@ -466,6 +471,63 @@ cipher_error:
     return 0;
 
 }
+#endif
+
+#ifdef OPNSSL1
+// Modifications made to OPNSSL3 version based on https://wiki.openssl.org/index.php/EVP_Authenticated_Encryption_and_Decryption
+int aes_gcm_enc(unsigned char* plaintext, unsigned int p_len, unsigned char* key, unsigned char* iv, unsigned char* dest, int* dest_len, unsigned char* tag)
+{
+    int tmp_dest;
+
+    // Create Context
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx)
+        return 1;
+
+    // Init Cipher
+    if (!EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL)) { // Init Context for AES GCM Encryption
+        perror("Error Init AES Context w/ Cipher");
+        goto cipher_error;
+    }
+
+    // Configure IV Length
+    if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, AES_GCM_IV_SIZE, NULL)) {
+        perror("Error Init AES IV Length");
+        goto cipher_error;
+    }
+
+    // Init Cipher with Key and IV
+    if (!EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv)) { // Init Context for AES GCM Encryption
+        perror("Error Init AES Context w/ Key and IV");
+        goto cipher_error;
+    }
+
+    // Encrypt Plaintext
+    if (!EVP_EncryptUpdate(ctx, dest, dest_len, plaintext, p_len)) {
+        perror("Error Encrypting Plaintext");
+        goto cipher_error;
+    }
+
+    // Must call Final before we can get tag!
+    if (!EVP_EncryptFinal_ex(ctx, dest, &tmp_dest))
+        goto cipher_error;
+
+    *dest_len = *dest_len + tmp_dest;
+
+    // Extract TAG
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, AES_GCM_TAG_SIZE, tag) != 1) {
+        perror("Error extracting tag");
+        goto cipher_error;
+    }
+
+cipher_error:
+    // Cleanup
+    EVP_CIPHER_CTX_free(ctx);
+
+    return 0;
+
+}
+#endif
 
 void b64_encode(const unsigned char* input,  unsigned char* output, int len)
 {
