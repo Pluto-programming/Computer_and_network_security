@@ -171,6 +171,7 @@ void handle_ssl(int conn_socket, SSL_CTX* ctx)
         goto exit_ssl;
     }
 
+    // b_64(username),b_64(key)
     // Handle User Registration
     SSL_write(ssl, "Hi\n", 3);
 
@@ -180,6 +181,7 @@ exit_ssl:
     SSL_free(ssl);
     close(conn_socket);
 }
+
 void handle_custom_auth(int conn_socket)
 {
     // Variables used for Encryption
@@ -336,7 +338,7 @@ int handle_usr_1(int conn_sock, char* msgbuff, char* username, unsigned char* no
 }
 
 // Messages will be sent with commas separating content
-// Example: USR, NONCE
+// Example: USR,NONCE
 int parse_csv_line(char* buff, int buff_len, unsigned char* trgt)
 {
     // Length Var
@@ -355,6 +357,9 @@ int parse_csv_line(char* buff, int buff_len, unsigned char* trgt)
 }
 
 // Lookup User Key (Leaving this to others since I am lazy)
+// During the running of the program we store use keys in a hash map.
+// Save use, key to a file
+// or multiple files.
 int lookup_user_key(unsigned char* key, char* usrname) {
     int fd = open("../Certs/usr_key.bin", O_RDONLY);
 
@@ -373,6 +378,7 @@ int lookup_user_key(unsigned char* key, char* usrname) {
     close(fd);
     return 1;
 }
+
 // SSL Functions
 SSL_CTX *create_context()
 {
