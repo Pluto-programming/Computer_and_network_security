@@ -1,0 +1,6 @@
+*.o
+auth-server
+*.pem
+*.key
+*.crt
+.gdb_history
