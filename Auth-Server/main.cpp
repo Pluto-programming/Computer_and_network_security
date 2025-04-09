@@ -1,4 +1,3 @@
-
 // Standard Library Functions
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +17,7 @@
 #include <unistd.h>
 // Threading
 #include <pthread.h>
+#include <thread>
 
 // Custom
 #include "auth-var.h"
@@ -119,9 +119,10 @@ int main(int argc, char** argv)
             goto ssl_exit;
         }
         // Create Thread or Fork. Fork will be simpler... With thread we will need to kill threads before cleanup.
-
-        conn_handler(tsock, ctx);
-        goto ssl_exit; // TESTING
+// Launch a new thread per connection
+        std::thread([tsock, ctx]() {
+            conn_handler(tsock, ctx);
+        }).detach(); // detached: cleans up after itself
     }
 
 ssl_exit:
@@ -188,17 +189,14 @@ void handle_custom_auth(int conn_socket)
     unsigned char msg_out[MSG_BUFF_MAX] = {0};
     unsigned char key[AES_256_KEY_SIZE] = {0};
     unsigned char key_c_s[AES_256_KEY_SIZE] = {0};
-    unsigned char tag_c[AES_GCM_TAG_SIZE + 1] = {0}; // Base 64 Encoded needs 1 byte extra for null termination?
-    // unsigned char tag_c_s[AES_GCM_TAG_SIZE];
+    unsigned char tag_c[AES_GCM_TAG_SIZE + 1] = {0};
     unsigned char iv_c[AES_GCM_IV_SIZE + 1] = {0};
     unsigned char iv_s[AES_GCM_IV_SIZE + 1] = {0};
     int enc_len;
 
     // User Message Parsing
-    char usrname[MAX_USR_LEN]; // Username
-    unsigned char nonce[NONCE_BYTE];   // User Nonce
-
-    // Generic Globals
+    char usrname[MAX_USR_LEN];
+    unsigned char nonce[NONCE_BYTE];
     unsigned char msg_buff[MAX_LEN] = {0};
 
     // Get Time
@@ -211,76 +209,53 @@ void handle_custom_auth(int conn_socket)
     // Handle First User Message
     handle_usr_1(conn_socket, (char*)msg_buff, usrname, nonce);
 
-    // Generate IV For Client Encrypted Message
-    if (RAND_bytes(iv_c, sizeof(key)) != 1) {
-        fprintf(stderr, "Error Generating Random Key");
+    // Generate IVs and Session Key
+    if (RAND_bytes(iv_c, AES_GCM_IV_SIZE) != 1 ||
+        RAND_bytes(iv_s, AES_GCM_IV_SIZE) != 1 ||
+        RAND_bytes(key_c_s, AES_256_KEY_SIZE) != 1) {
+        fprintf(stderr, "Error generating IVs or session key\n");
         goto ret_err;
     }
 
-    // Generate IV For Client_Chat Server Encrypted Message
-    if (RAND_bytes(iv_s, sizeof(key)) != 1) {
-        fprintf(stderr, "Error Generating Random Key");
+    if (!lookup_user_key(key, usrname)) {
         goto ret_err;
     }
 
-    // Generate IV For Client_Chat Server Encrypted Message
-    if (RAND_bytes(key_c_s, sizeof(key_c_s)) != 1) {
-        fprintf(stderr, "Error Generating Random Key");
-        goto ret_err;
-    }
-
-     // Likely want to do first, if no use found, exit
-    if(!lookup_user_key(key, usrname)) {
-    goto ret_err;
-    }
-
-    // Generate String Encrypted with the User Key
-    sprintf((char*)msg_buff, "%s,%s,%ld,%s", usrname, nonce, currtime, key_c_s); // Need Username, Nonce, Timestamp, Client-Server Key
-    
-    // Encrypt Message (Server)
+    // First Encrypted Message (Client Side)
+    snprintf((char*)msg_buff, sizeof(msg_buff), "%s,%s,%ld,%s",
+             usrname, nonce, currtime, key_c_s);
     aes_gcm_enc(msg_buff, strlen((char*)msg_buff), key, iv_s, msg_out, &enc_len, tag_c);
 
-    /**
-     * SEND FIRST SET IN MESSAGE
-     * Base 64 encode msg_out
-     * Base 64 encode TAG
-     * Format msg_buff as (b_64(msg_out), IV, b_64(tag))
-     */
-    b64_encode(msg_out, msg_buff, enc_len); // Store msg_out base64 encoded in msg_buff
-    b64_encode(tag_c, tag_c, AES_GCM_TAG_SIZE); // Store tag base64 encoded
-    b64_encode(iv_s, iv_s, AES_GCM_TAG_SIZE); // Store Iv base64 encoded
-    snprintf((char*)msg_out, MSG_BUFF_MAX, "%s,%s,%s", msg_buff, iv_s, tag_c);
-    printf("%s\n", (char*)msg_out);
-    send(conn_socket, msg_out, strlen((char*)msg_out), 0);
-    
+    unsigned char b64_msg1[2048], b64_iv1[64], b64_tag1[64];
+    b64_encode(msg_out, b64_msg1, enc_len);
+    b64_encode(iv_s, b64_iv1, AES_GCM_IV_SIZE);
+    b64_encode(tag_c, b64_tag1, AES_GCM_TAG_SIZE);
 
-    // Create Chat Server String for Encryption
-    // Load Chat Server Key
-    if(!load_chat_key(key, AES_256_KEY_SIZE))
+    // Second Encrypted Message (Chat Server Side)
+    if (!load_chat_key(key, AES_256_KEY_SIZE)) {
         goto ret_err;
-    sprintf((char*)msg_buff, "%s,%s,%ld", usrname, key_c_s, currtime); // Need Username, Client-Server Key, Timestamp -- Optionally add Nonce
-    // printf("%s\n", (char*)msg_buff);
-    // Encrypt Message
+    }
+
+    snprintf((char*)msg_buff, sizeof(msg_buff), "%s,%s,%ld",
+             usrname, key_c_s, currtime);
     aes_gcm_enc(msg_buff, strlen((char*)msg_buff), key, iv_c, msg_out, &enc_len, tag_c);
 
-    /***
-     * 
-     * SEND SECOND Message
-     * Base 64 encode msg_out
-     * Base 64 encode TAG
-     * Format msg_buff as (b_64(msg_out), IV, TAG, b_64(tag))
-     */
-    b64_encode(msg_out, msg_buff, enc_len); // Store msg_out base64 encoded in msg_buff
-    b64_encode(tag_c, tag_c, AES_GCM_TAG_SIZE); // Store tag base64 encoded
-    b64_encode(iv_c, iv_c, AES_GCM_TAG_SIZE); // Store tag base64 encoded
-    snprintf((char*)msg_out, MSG_BUFF_MAX, "%s,%s,%s", msg_buff, iv_c, tag_c);
+    unsigned char b64_msg2[2048], b64_iv2[64], b64_tag2[64];
+    b64_encode(msg_out, b64_msg2, enc_len);
+    b64_encode(iv_c, b64_iv2, AES_GCM_IV_SIZE);
+    b64_encode(tag_c, b64_tag2, AES_GCM_TAG_SIZE);
+
+    // Final Full Message (6-part payload)
+    snprintf((char*)msg_out, MSG_BUFF_MAX, "%s,%s,%s,%s,%s,%s",
+             b64_msg1, b64_iv1, b64_tag1,
+             b64_msg2, b64_iv2, b64_tag2);
 
     send(conn_socket, msg_out, strlen((char*)msg_out), 0);
     printf("%s\n", (char*)msg_out);
+
 ret_err:
     return;
 }
-
 int load_chat_key(unsigned char* key_buff, unsigned size)
 {
     int fd;
