@@ -1,15 +1,30 @@
-CC=gcc
-CFLAGS=-Wall -Werror
+#CC=g++
+#CFLAGS=-Wall -Werror -g
+#
+#.PHONY: all clean
+#
+#all: keygen
+#
+#keygen: main.o
+#	$(CC) $(CFLAGS) -o $@ $<
+#
+#main.o: main.cpp
+#	$(CC) $(CFLAGS) -c main.cpp
+#
+#clean:
+#	rm -f *.o keygen
 
-.PHONY: all clean
+CC=g++
+CFLAGS=-Wall -Werror -g -I/opt/homebrew/opt/openssl@3/include
+LDFLAGS=-L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto
 
 all: keygen
 
-keygen: keygen.o
-	$(CC) $(CFLAGS) -o $@ $< -lssl -lcrypto
+keygen: main.o
+	$(CC) $(CFLAGS) -o keygen main.o $(LDFLAGS)
 
-keygen.o: main.c
-	$(CC) $(CFLAGS) -o $@ -c $<
+main.o: main.cpp
+	$(CC) $(CFLAGS) -c main.cpp
 
 clean:
-	rm -f keygen.o keygen
+	rm -f *.o keygen

@@ -1,0 +1,7 @@
+*.o
+auth-server
+*.pem
+*.key
+*.crt
+.gdb_history
+.DS_Store
