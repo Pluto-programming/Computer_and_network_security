@@ -4,6 +4,7 @@
 #define TLS_HELLO 5
 #define MAX_LEN 2048   // Max message length
 #define MAX_USR_LEN 64 // Max length of Username
+#define MAX_PASS_LEN 64 // Max length of Password
 #define MSG_BUFF_MAX 8192
 #define NONCE_BYTE 64
 #define DELIM ','

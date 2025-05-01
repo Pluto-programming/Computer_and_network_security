@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <map>
+#include <iostream>
 
 // File
 #include <fcntl.h>
@@ -31,7 +33,8 @@
 #include <openssl/core_names.h> // Defines
 #endif
 
-
+// User database in ram
+std::map<char*, char*> user_database;
 
 // Custom Functions -- Separate into separate file later
 void conn_handler(int conn_socket, SSL_CTX* ctx);
@@ -169,15 +172,62 @@ void handle_ssl(int conn_socket, SSL_CTX* ctx)
     // Check if connection will be accepted
     if (SSL_accept(ssl) <= 0) {
         ERR_print_errors_fp(stderr);
-        goto exit_ssl;
+    } else {
+
+        // b_64(username),b_64(key)
+        // Handle User Registration
+
+        // Receive registration message (username,password)
+        char buffer[4096] = {0};
+        int bytes = SSL_read(ssl, buffer, sizeof(buffer));
+        if (bytes > 0) {
+            // Extract Username and Password
+            char username[MAX_USR_LEN] ={0}; 
+            char password[MAX_PASS_LEN] = {0};
+            int len = parse_csv_line(buffer, MAX_USR_LEN, (unsigned char*)username);
+            parse_csv_line(buffer + (len + 1), MAX_PASS_LEN, (unsigned char*)password);
+            std::cout << "Registering " << username << ":" << password << std::endl;
+            
+
+            // Register user
+            user_database[username] = password;
+            
+            // Generate random AES-256 key
+            unsigned char aes_key[AES_256_KEY_SIZE];
+            if (RAND_bytes(aes_key, AES_256_KEY_SIZE) != 1) {
+                const char fail_msg[28] = "Failed to generate AES key\n";
+                fprintf(stderr, fail_msg);
+                SSL_write(ssl, fail_msg, sizeof(fail_msg));
+                // Cleanup SSL connection
+                SSL_shutdown(ssl);
+                SSL_free(ssl);
+                close(conn_socket);
+                return;
+            }
+
+            // Send AES key to client
+            SSL_write(ssl, reinterpret_cast<const char*>(aes_key), sizeof(aes_key));
+
+            // Save AES key
+            int filename_size = 30 + MAX_USR_LEN;
+            char filename[filename_size];
+            snprintf(filename, sizeof(filename), "../Certs/%s.bin", username);
+
+            // create file if it doesnt exist
+            FILE *file = fopen(filename, "w");
+            fclose(file);
+            int fd = open(filename, O_WRONLY, 0666);
+
+            // Write key to file
+            ssize_t bytes_written = write(fd, aes_key, sizeof(aes_key)); 
+
+            if (bytes_written < 0) {
+                perror("Failed to write AES key to file");
+            }
+            close(fd);
+        }
     }
-
-    // b_64(username),b_64(key)
-    // Handle User Registration
-    SSL_write(ssl, "Hi\n", 3);
-
     // Cleanup SSL connection
-exit_ssl:
     SSL_shutdown(ssl);
     SSL_free(ssl);
     close(conn_socket);
@@ -218,6 +268,7 @@ void handle_custom_auth(int conn_socket)
     }
 
     if (!lookup_user_key(key, usrname)) {
+        std::cout << "Could not find a key for user " << usrname << std::endl;
         goto ret_err;
     }
 
@@ -249,7 +300,7 @@ void handle_custom_auth(int conn_socket)
     snprintf((char*)msg_out, MSG_BUFF_MAX, "%s,%s,%s,%s,%s,%s",
              b64_msg1, b64_iv1, b64_tag1,
              b64_msg2, b64_iv2, b64_tag2);
-
+    
     send(conn_socket, msg_out, strlen((char*)msg_out), 0);
     printf("%s\n", (char*)msg_out);
 
@@ -289,7 +340,6 @@ int load_chat_key(unsigned char* key_buff, unsigned size)
 int handle_usr_1(int conn_sock, char* msgbuff, char* username, unsigned char* nonce)
 {
     int res = 0;
-
     // Only handle 4096 max len message
     res = recv(conn_sock, msgbuff, MSG_BUFF_MAX, 0);
 
@@ -298,16 +348,10 @@ int handle_usr_1(int conn_sock, char* msgbuff, char* username, unsigned char* no
     if (res == 0)
         return 1;
 
-    write(1, username, res);
-    write(1, "\n", 1);
-
     //Parse out Nonce (res + 1) to get to start of next field
-    res = parse_csv_line(msgbuff + (res + 1), NONCE_BYTE, (unsigned char*)nonce);
+    res = parse_csv_line(msgbuff + (res + 1), MAX_PASS_LEN, (unsigned char*)nonce);
     if (res == 0)
         return 1;
-
-    write(1, nonce, res);
-    write(1, "\n", 1);
 
     return 0;
 }
@@ -336,13 +380,19 @@ int parse_csv_line(char* buff, int buff_len, unsigned char* trgt)
 // Save use, key to a file
 // or multiple files.
 int lookup_user_key(unsigned char* key, char* usrname) {
-    int fd = open("../Certs/usr_key.bin", O_RDONLY);
+    // Get the file name for the user's key
+    int filename_size = 30 + MAX_USR_LEN;
+    char filename[filename_size];
+    snprintf(filename, sizeof(filename), "../Certs/%s.bin", usrname);
 
+    // Open the file
+    int fd = open(filename, O_RDONLY);
+    //std::cout << "looking for file "<< filename << std::endl;
     if (fd < 0) {
-        perror("open");
         return 0;
     }
 
+    // Read the key and put it into the key arg
     ssize_t read_bytes = read(fd, key, AES_256_KEY_SIZE);
     if (read_bytes != AES_256_KEY_SIZE) {
         perror("read");
@@ -350,6 +400,7 @@ int lookup_user_key(unsigned char* key, char* usrname) {
         return 0;
     }
 
+    // Close the file
     close(fd);
     return 1;
 }

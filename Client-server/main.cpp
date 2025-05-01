@@ -12,6 +12,16 @@
 #include <openssl/rand.h>
 #include "../Include/aes_utils.h"
 #include "../Include/shared.h"
+#include "../Auth-Server/auth-var.h"
+
+// SSL
+#include <openssl/ssl.h> // TLS
+#include <openssl/err.h> // Error 
+#include <openssl/rand.h> // AES Key Generation (SYM)
+#include <openssl/evp.h> // Symmetric Key
+#ifdef OPNSSL3
+#include <openssl/core_names.h> // Defines
+#endif
 
 #define AUTH_PORT 8081
 #define CHAT_PORT 6666
@@ -36,6 +46,80 @@ void signal_handler(int signum) {
     exit(0);
 }
 
+SSL_CTX* create_client_context() {
+    const SSL_METHOD* method = TLS_client_method();
+    SSL_CTX* ctx = SSL_CTX_new(method);
+    if (!ctx) {
+        perror("Unable to create SSL context");
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+    return ctx;
+}
+
+// Get User registration info, send to auth, and get key
+void register_user(char key[32], std::string username, std::string pass){
+    
+
+    // Setup SSL
+    SSL_load_error_strings();
+    OpenSSL_add_ssl_algorithms();
+    SSL_CTX* ctx = create_client_context();
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(8081);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+    if (connect(server_fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+        perror("Connection failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+    SSL* ssl;
+    ssl = SSL_new(ctx);
+    SSL_set_fd(ssl, server_fd);
+
+    if (SSL_connect(ssl) <= 0) {
+        ERR_print_errors_fp(stderr);
+    } else {
+        std::cout << "SSL connection established." << std::endl;
+
+        // Send registration message (username,password)
+        std::string register_message = username + "," + pass;
+
+        SSL_write(ssl, register_message.c_str(), register_message.length());
+
+        // Receive AES key (expecting 32 bytes for AES-256)
+        unsigned char aes_key[32] = {0};
+        int received = SSL_read(ssl, aes_key, sizeof(aes_key));
+
+        if (received == 32) {
+            std::cout << "Received AES-256 key: ";
+            for (int i = 0; i < 32; ++i)
+                printf("%02x", aes_key[i]);
+            std::cout << std::endl;
+
+        
+        } else {
+            // If not exactly 32 bytes, server might have sent an error message
+            char error_msg[4096] = {0};
+            memcpy(error_msg, aes_key, received);
+            std::cout << "Server response: " << error_msg << std::endl;
+        }
+
+    }
+    // Shutdown SSL connection and return
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    close(server_fd);
+    SSL_CTX_free(ctx);
+    EVP_cleanup();
+    return;
+}
+
+
+
 void request_session_key_from_auth(std::vector<unsigned char>& session_key) {
     std::cout << "[Client] Connecting to auth-server..." << std::endl;
 
@@ -45,8 +129,41 @@ void request_session_key_from_auth(std::vector<unsigned char>& session_key) {
     addr.sin_port = htons(AUTH_PORT);
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
+    // Ask user to register or login
+    std::cout << "Would you like to login or register a new user?";
+    std::cout << "(type 'r' for register, 'l' for login)" << std::endl;
+    std::string input;
+    std::cin >> input;
+
+    char key[32];
+    std::string username;
+    std::string pass;
+
+    // get key from login or registration
+    if (!input.empty() && input[0] == 'r'){ //register
+        // Get username and password
+        std::cout << "\nRegistering the user . . ."<<std::endl;
+        std::cout << "Username: ";
+        std::cin >> username;
+        std::cout << "Password: ";
+        std::cin >> pass;
+        std::cout << std::endl;
+
+        register_user(key, username, pass);
+        std::cout << "Done Registering the user\n"<<std::endl;
+    }
+
+    // login
+    // Get username and password if not logged in
+    std::cout << "Logging in . . ."<<std::endl;
+    std::cout << "Username: ";
+    std::cin >> username;
+    std::cout << std::endl << "Password: ";
+    std::cin >> pass;
+    std::cout << std::endl;
     connect(sock, (sockaddr*)&addr, sizeof(addr));
-    send(sock, "client1,12345678", 16, 0);
+    std::string log_msg = username + ',' + pass;
+    send(sock, log_msg.c_str(), sizeof(log_msg.c_str()), 0);                          // Username and password
 
     char buffer[2048] = {0};
     int len = recv(sock, buffer, sizeof(buffer), 0);
@@ -61,7 +178,9 @@ void request_session_key_from_auth(std::vector<unsigned char>& session_key) {
     }
 
     unsigned char user_key[32], chat_key[32];
-    std::ifstream ukey(USER_KEY_PATH, std::ios::binary);
+    std::string usr_key_path = "../Certs/" + username + ".bin";
+    std::ifstream ukey(usr_key_path.c_str(), std::ios::binary);
+    
     if (!ukey.read((char*)user_key, sizeof(user_key))) {
         std::cerr << "[Client] ERROR: Failed to load user key\n";
         exit(1);
@@ -161,9 +280,12 @@ void chat_loop(const std::vector<unsigned char>& session_key) {
     reader.join();
 }
 
+
 int main() {
     std::signal(SIGINT, signal_handler);
     std::cout << "[Client] Starting main()" << std::endl;
+
+
 
     std::vector<unsigned char> session_key;
     request_session_key_from_auth(session_key);
